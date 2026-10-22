@@ -11,74 +11,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-test:
-    name: build & test (${{ matrix.compiler }})
+  check:
+    name: lint, types & tests (Python ${{ matrix.python }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Clang needs >= 19: earlier Clang reports __cpp_concepts=201907,
-          # which guards out libstdc++'s <expected>.
-          - compiler: gcc
-            cc: gcc-13
-            cxx: g++-13
-            clang_version: ""
-          - compiler: clang
-            cc: clang-19
-            cxx: clang++-19
-            clang_version: "19"
+        python: ["3.12", "3.14"]
     env:
-      CC: ${{ matrix.cc }}
-      CXX: ${{ matrix.cxx }}
+      # uv's own Python builds come with the C headers that building dexpp needs.
+      UV_PYTHON_PREFERENCE: only-managed
     steps:
       - uses: actions/checkout@v4
-      - name: Install Clang
-        if: matrix.clang_version != ''
-        run: |
-          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh ${{ matrix.clang_version }}
-      - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cxx }}
-      - name: Configure
-        run: cmake -S . -B build
-      - name: Build
-        run: cmake --build build -j
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
-  sanitizers:
-    name: ASan + UBSan
-    runs-on: ubuntu-24.04
-    env:
-      CC: gcc-13
-      CXX: g++-13
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++-13
-      - name: Configure
-        # Debug keeps assertions on and the stack traces exact.
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSPLITDEX_SANITIZE=address,undefined
-      - name: Build
-        run: cmake --build build -j
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-        env:
-          ASAN_OPTIONS: detect_stack_use_after_return=1
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-
-  format:
-    name: clang-format
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format-18
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      # dexpp is built from source at the pinned commit: GCC 13, the default
+      # compiler on ubuntu-24.04, compiles its C++23 extension.
+      - name: Install
+        run: uv sync --locked
       - name: Check formatting
-        # Pinned to clang-format-18, the version the tree is formatted with; a
-        # newer clang-format may reflow differently.
-        run: |
-          git ls-files '*.cc' '*.cpp' '*.hpp' '*.h' \
-            | xargs clang-format-18 --dry-run -Werror
+        run: uv run ruff format --check
+      - name: Lint
+        run: uv run ruff check
+      - name: Type-check
+        run: uv run mypy
+      - name: Test
+        run: uv run pytest

@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-First version of `split-dex`.
+First version of `split-dex`: a Python package with a `split-dex` command,
+built on dexpp's Python binding.
 
 - Splits an APK's classes into grouped DEX files. Business classes (under
   `--package`) are grouped by how they are linked, in files of about

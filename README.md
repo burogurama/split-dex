@@ -14,8 +14,9 @@ It reads every `classes*.dex` in the APK and sorts the classes into two tiers:
 Every class ends up in exactly one output DEX file. Two maps record where each
 class went.
 
-It is built on [dexpp](https://github.com/burogurama/dexpp), which reads,
-analyses and writes the DEX files.
+It is written in Python, on the Python binding of
+[dexpp](https://github.com/burogurama/dexpp), which reads, analyses and writes
+the DEX files.
 
 ## Output
 
@@ -73,28 +74,21 @@ its middle, so packages stay whole. Only a single package that is too big for
 one DEX file has to be cut inside the package. `split-dex` then prints a
 warning that names the package.
 
-## Build
+## Install
 
-Requirements: a C++23 compiler (GCC 13 or newer, or Clang 19 or newer) and
-CMake 3.18 or newer. CMake downloads dexpp (pinned to an exact commit) and
-GoogleTest while it configures.
+Requirements: Python 3.12 or newer. dexpp is not on PyPI, so it is built from
+source, at the commit pinned in `pyproject.toml`, when split-dex is installed.
+That build needs a C++23 compiler (GCC 13 or newer, or Clang 19 or newer),
+CMake 3.18 or newer, and the Python headers (on Debian and Ubuntu, the
+`python3-dev` package of your Python version).
 
-```sh
-cmake -S . -B build
-cmake --build build -j
-```
-
-This builds `build/split-dex`. The build type is Release unless you pass another
-one with `-DCMAKE_BUILD_TYPE`. To install it into `/usr/local/bin`:
+From a checkout, install the `split-dex` command with
+[uv](https://docs.astral.sh/uv/) or pip:
 
 ```sh
-sudo cmake --install build
-```
-
-To build against a local dexpp checkout instead of the pinned commit:
-
-```sh
-cmake -S . -B build -DFETCHCONTENT_SOURCE_DIR_DEXPP=/path/to/dexpp
+uv tool install .
+# or
+pip install .
 ```
 
 ## Usage
@@ -126,19 +120,32 @@ At the end, `split-dex` prints a summary: how many classes are in each tier, how
 many files were written, and how many groups had to be split for the 64K
 limit.
 
-## Tests
+The same work is available from Python: `split_dex.splitter.split()` takes the
+options as a `split_dex.splitter.Options` and returns the counts.
+
+## Development
 
 ```sh
-ctest --test-dir build --output-on-failure
+uv sync                     # .venv with split-dex, dexpp and the dev tools
+uv run pytest               # the tests
+uv run ruff format --check  # formatting
+uv run ruff check           # lint
+uv run mypy                 # types
 ```
 
-The tests build small APKs in memory, so they need no fixture files.
+The tests build small APKs in memory. Their classes are copies of the template
+classes in `tests/data/templates.dex`, renamed for each test. The templates are
+compiled from `tests/data/Templates.java`; `tests/data/make_templates.sh`
+rebuilds them (it needs `javac` and the Android SDK's `d8`).
+
+dexpp is pinned to an exact commit in `pyproject.toml`. To move to a newer
+dexpp, change that commit and run `uv lock`.
 
 ## Layout
 
-- `src/partition.hpp` — the package-safe grouping algorithm. It depends only on
+- `split_dex/partition.py` — the package-safe grouping algorithm. It uses only
   the standard library.
-- `src/splitter.hpp` — reads the APK, sorts the classes into tiers, builds the
-  links, groups them, and writes the DEX files and the maps.
-- `src/main.cpp` — the command-line interface.
-- `tests/` — unit tests (GoogleTest).
+- `split_dex/splitter.py` — reads the APK, sorts the classes into tiers, builds
+  the links, groups them, and writes the DEX files and the maps.
+- `split_dex/cli.py` — the command-line interface.
+- `tests/` — the unit tests (pytest).

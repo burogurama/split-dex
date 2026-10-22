@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "split-dex"
+version = "0.1.0"
+description = "Split the classes of an Android APK into grouped DEX files"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Mohamed Nasser" }]
+dependencies = [
+    # dexpp reads, analyses and writes the DEX files. It is not on PyPI, and its binding of the
+    # editable DEX model is not in a release yet, so it is pinned to an exact commit and built
+    # from source.
+    "dexpp @ git+https://github.com/burogurama/dexpp@c7e012167cb09609a243c4cf6b7531b31683a0a3",
+]
+
+[project.scripts]
+split-dex = "split_dex.cli:main"
+
+[dependency-groups]
+dev = ["mypy>=1.15", "pytest>=8.3", "ruff>=0.11"]
+
+[tool.hatch.metadata]
+# Needed for the git dependency on dexpp.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["split_dex"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM"]
+# No maximum line length: the formatter wraps what it can.
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.mypy]
+strict = true
+files = ["split_dex", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["*_test.py"]
