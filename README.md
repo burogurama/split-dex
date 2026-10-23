@@ -24,13 +24,23 @@ With no other option, every class is in one set, `all`, split by the
 | ------ | ------- |
 | `--apk FILE` | Input APK. All its `classes*.dex` entries are read. Required. |
 | `--out DIR` | Output directory. Created if it does not exist. Required. |
-| `--set NAME=STRATEGY[,KEY=VALUE...]` | A set of classes and the strategy that splits it, with the strategy's settings. `STRATEGY` is a built-in or plugin name, or your own class as `MODULE:CLASS` or `FILE.py:CLASS` (see [Writing a strategy](#writing-a-strategy)). Repeat it for more sets. The DEX files are written set by set, in this order. |
+| `--set NAME=STRATEGY[,KEY=VALUE...]` | A set of classes and the strategy that splits it, with the strategy's settings. `STRATEGY` is a built-in or plugin name (`--list-strategies` shows them), or your own class as `MODULE:CLASS` or `FILE.py:CLASS` (see [Writing a strategy](#writing-a-strategy)). Repeat it for more sets. The DEX files are written set by set, in this order. |
 | `--assign PATTERN[,PATTERN...]=NAME` | Send the classes whose names match a pattern to the set `NAME`. Repeat it; each class goes to the first pattern it matches. |
 | `--list-strategies` | Show the strategies and their settings. |
 
 With a single `--set`, `--assign` is not needed: every class goes to that set.
 With several, every class must match some pattern; end with `'**=NAME'` to
 catch the rest.
+
+A DEX file can reference at most 65,536 methods, 65,536 fields and 65,535
+types. When a group of classes goes over one of these limits, it is cut in two,
+and each half is written again (and cut again if needed). The cut falls nearest
+the middle, between the units the strategy keeps together, such as packages.
+Only a unit too big for one DEX file is cut inside, and `split-dex` prints a
+warning that names it.
+
+If the APK defines a class in more than one DEX file, only the first copy in
+multidex order is kept. That is the copy Android loads.
 
 ### Patterns
 
@@ -44,28 +54,6 @@ Patterns match class names such as `com.myapp.Main` or `com.myapp.Outer$Inner`.
 | `com.myapp.Main` | One class. |
 | `**` | Every class. |
 | `@FILE` | The patterns listed in `FILE`, one per line. Blank lines and lines starting with `#` are skipped. |
-
-### Strategies
-
-| Strategy | What it does | Settings |
-| -------- | ------------ | -------- |
-| `package-affinity` | Groups classes by how they are linked, each package whole, about `cap` classes per file. | `cap` (default 1000) |
-| `package-order` | Puts whole packages, sorted by name, into files of about `cap` classes. | `cap` (default 1000) |
-| `original` | Keeps the classes in the DEX files they came from: one file per input DEX file. | `max_files`: merge the smallest files down to this many (default: no limit) |
-| `single` | Puts all the classes in one DEX file. | none |
-
-`package-affinity` and `package-order` both keep each package whole. `package-order`
-reads only the class names, not the code, so it is faster and uses less memory, and
-a new version of the app moves few classes from one file to another. Packages that
-are next to each other in name order are usually parts of the same library or
-feature. `package-affinity` reads the code to follow the links between classes.
-
-Whatever the strategy, a DEX file can reference at most 65,536 methods, 65,536
-fields and 65,535 types. When a group goes over one of these limits, it is cut
-in two, and each half is written again (and cut again if needed). The cut falls
-at the block boundary nearest the middle: for `package-affinity` a block is a
-package, so packages stay whole. Only a single package that is too big for one
-DEX file is cut inside, and `split-dex` prints a warning that names it.
 
 ### Examples
 
@@ -98,9 +86,6 @@ split-dex --apk app.apk --out out/ \
     --assign '**=libraries'
 ```
 
-If the APK defines a class in more than one DEX file, only the first copy in
-multidex order is kept. That is the copy Android loads.
-
 ## Output
 
 In the output directory:
@@ -122,52 +107,23 @@ At the end, `split-dex` prints a summary: how many classes were read, how many
 files were written, how many groups had to be cut for the 64K limits, and the
 classes and files of each set.
 
-## How package-affinity groups classes
-
-Classes that are loaded together should be in the same file. A class usually
-loads the classes it is linked to, so two classes are linked when:
-
-- one is the superclass of the other, or an interface it implements;
-- one is nested in the other (`LFoo$Bar;` is linked to `LFoo;`);
-- a method of one refers to the other: it calls one of its methods, uses one of
-  its fields, or uses the type (for example `new`, a cast, or `instanceof`).
-
-The grouping works on **whole Java packages**. A package is never split across
-two files. This keeps package-private access working when each DEX file is
-loaded by its own class loader: two classes of one package in different class
-loaders cannot use each other's package-private members, and ART then throws
-`IllegalAccessError`.
-
-The steps:
-
-1. Group the classes by package.
-2. Add up the links between classes into links between packages.
-3. Put the packages in order so that linked packages are next to each other.
-   The order starts from the package linked to the most other packages. Each
-   next package is the one with the strongest link to the packages already
-   placed.
-4. Cut that order into files of about `cap` classes. Each package goes into a
-   file whole. A package bigger than the cap gets a file of its own.
-
-Packages with no links come last and are packed together, so no file is left
-with a single stray class.
-
 ## Install
 
-Requirements: Python 3.12 or newer. dexpp is not on PyPI, so it is built from
-source, at the commit pinned in `pyproject.toml`, when split-dex is installed.
-That build needs a C++23 compiler (GCC 13 or newer, or Clang 19 or newer),
-CMake 3.18 or newer, and the Python headers (on Debian and Ubuntu, the
-`python3-dev` package of your Python version).
-
-From a checkout, install the `split-dex` command with
-[uv](https://docs.astral.sh/uv/) or pip:
+split-dex needs Python 3.14 or newer. Install the `split-dex` command from
+PyPI with [uv](https://docs.astral.sh/uv/) or pip:
 
 ```sh
-uv tool install .
+uv tool install split-dex
 # or
-pip install .
+pip install split-dex
 ```
+
+Its dependency dexpp has prebuilt wheels for Linux x86_64 (glibc 2.28+ and
+musl). On other platforms, the installer builds dexpp from source, which needs
+a C++23 compiler (GCC 13 or newer, or Clang 19 or newer) and CMake 3.18 or
+newer.
+
+From a checkout, `uv tool install .` installs the command.
 
 ## Writing a strategy
 
@@ -250,8 +206,14 @@ classes in `tests/data/templates.dex`, renamed for each test. The templates are
 compiled from `tests/data/Templates.java`; `tests/data/make_templates.sh`
 rebuilds them (it needs `javac` and the Android SDK's `d8`).
 
-dexpp is pinned to an exact commit in `pyproject.toml`. To move to a newer
-dexpp, change that commit and run `uv lock`.
+To move to a newer dexpp, update its version range in `dependencies` in
+`pyproject.toml` and run `uv lock`.
+
+To release: set `version` in `pyproject.toml`, turn the `## Unreleased`
+section of `CHANGELOG.md` into `## <version>`, and push a `v<version>` tag. The
+release workflow builds the wheel and the sdist, checks that the wheel installs
+and runs, creates the GitHub release with that changelog section as notes, and
+uploads the same files to PyPI.
 
 ## Layout
 

@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.0
 
-First version of `split-dex`: a Python package with a `split-dex` command,
-built on dexpp's Python binding.
+First release of `split-dex`: a Python package with a `split-dex` command,
+built on dexpp's Python binding. It needs Python 3.14 or newer and dexpp
+0.2.0, and is licensed under the Apache License 2.0.
 
 - Splits an APK's classes into grouped DEX files. `--set` declares sets of
   classes and the strategy that splits each one, and `--assign` sends classes
@@ -20,7 +21,7 @@ built on dexpp's Python binding.
 - Writes `index.csv` (`class,file`) and `sets.csv` (`file,set`) next to the
   DEX files.
 - A group over the 64K DEX reference limit is cut at the block boundary nearest
-  its middle (a package, for `package-affinity`). A single package too big for
-  one DEX file is cut and reported with a warning.
+  its middle (a package, for `package-affinity` and `package-order`). A single
+  package too big for one DEX file is cut and reported with a warning.
 - A class defined in more than one DEX file is written once: the first copy in
   multidex order.
