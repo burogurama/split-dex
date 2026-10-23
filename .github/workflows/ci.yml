@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv has no major-version tags (v10) since v8: pin a full version.
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           python-version: "3.14"
           enable-cache: true
