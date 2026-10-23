@@ -1,15 +1,13 @@
 """Split the classes of an APK into grouped DEX files.
 
-Business classes, the app's own code under a given package, are grouped by how they are linked,
-in DEX files of about a chosen number of classes, and a Java package is never split across files
-(see `split_dex.partition`). Framework classes, everything else, keep the app's own layout: one
-DEX file for each original `classes*.dex`. Every class lands in exactly one DEX file.
+The classes are sorted into named sets (see `split_dex.class_sets`), and the strategy of each set
+groups its classes (see `split_dex.strategy`). Each group is written as one DEX file, or as
+several when it goes over a 64K limit of the DEX format. Every class lands in exactly one DEX
+file, and two sets never share a file.
 """
 
 import collections.abc
 import dataclasses
-import enum
-import heapq
 import pathlib
 import re
 from typing import TextIO
@@ -17,7 +15,10 @@ from typing import TextIO
 import dexpp
 
 import split_dex
+from split_dex import class_sets
 from split_dex import partition
+from split_dex import strategy
+from split_dex.strategies import package_affinity
 
 # Older DEX files are written as 035, the lowest DEX version.
 _MIN_DEX_VERSION = 35
@@ -35,9 +36,21 @@ _MAX_TYPES = 65535
 _MAX_PROTOS = 65535
 _MAX_MEMBERS = 65536  # fields, methods, method handles and call sites
 
+# How many classes an error message about a strategy's groups names.
+_EXAMPLES = 3
+
 
 class SplitError(split_dex.Error):
-    """Raised when an option is out of range, the APK cannot be read, or a file cannot be written."""
+    """Raised when the APK cannot be read or a file cannot be written."""
+
+
+def default_sets() -> tuple[class_sets.ClassSet, ...]:
+    """The sets used when none are given: one set, `all`, grouped by `package-affinity`.
+
+    Returns:
+        The sets.
+    """
+    return (class_sets.ClassSet("all", package_affinity.PackageAffinity()),)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,28 +59,33 @@ class Options:
 
     Attributes:
         apk_path: The input APK. Every top-level `classes*.dex` entry is read.
-        package: The app's package, for example `com.myapp.`. A class is business when its
-            descriptor is under this package (`Lcom/myapp/...;`) and framework otherwise
-            (AndroidX, Kotlin, other libraries). It is read straight from the class names, so the
-            app must not be obfuscated.
         out_dir: The output directory. It is created if it does not exist.
-        business_cap: The target number of classes per business DEX file. A larger cap gives
-            fewer, fuller files and fewer strings and type names repeated across files.
-        framework_cap: The most framework DEX files. Framework classes get one DEX file per
-            original `classes*.dex`; only when the APK has more than this are the smallest
-            merged.
-        hotlist: Binary class names, such as `com.myapp.Startup`. The whole package of each
-            listed business class is moved to the framework tier, for example to keep hot
-            startup code in the base DEX file. The package moves as a unit, so no package is
-            split across the two tiers.
+        sets: The sets to sort the classes into. Their DEX files are written in this order.
+        assignments: Which classes go to which set, tried in order (see
+            `split_dex.class_sets.assign`). It may be empty when there is a single set.
     """
 
     apk_path: pathlib.Path
-    package: str
     out_dir: pathlib.Path
-    business_cap: int = 1000
-    framework_cap: int = 16
-    hotlist: collections.abc.Sequence[str] = ()
+    sets: collections.abc.Sequence[class_sets.ClassSet] = dataclasses.field(
+        default_factory=default_sets
+    )
+    assignments: collections.abc.Sequence[class_sets.Assignment] = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class SetResult:
+    """What a split produced for one set.
+
+    Attributes:
+        name: The set's name.
+        classes: The number of classes in the set.
+        dex_files: The number of DEX files written for the set.
+    """
+
+    name: str
+    classes: int
+    dex_files: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -76,29 +94,24 @@ class Result:
 
     Attributes:
         total_classes: The number of classes read, each class counted once.
-        business_classes: The number of business classes.
-        framework_classes: The number of framework classes.
-        business_dex: The number of business DEX files written.
-        framework_dex: The number of framework DEX files written.
-        overflow_splits: How many groups were cut in two because they went over a 64K limit of
-            the DEX format. A business group is cut at a package boundary.
-        split_packages: The packages, such as `Lcom/myapp/big`, that were too big for one DEX
-            file and had to be cut across files. Classes of such a package can no longer use
-            package-private access between those files. Normally empty.
         duplicate_classes: How many later copies of classes defined in more than one DEX file
             were skipped. The first copy in multidex order is kept: the one Android loads.
+        dex_files: The number of DEX files written.
+        overflow_splits: How many groups were cut in two because they went over a 64K limit of
+            the DEX format.
+        split_blocks: The names of the blocks, such as `package Lcom/myapp/big`, that were too
+            big for one DEX file and had to be cut across files. Normally empty.
         total_bytes: The total size of the written DEX files.
+        sets: What was produced for each set, in the order of the sets.
     """
 
     total_classes: int
-    business_classes: int
-    framework_classes: int
-    business_dex: int
-    framework_dex: int
-    overflow_splits: int
-    split_packages: list[str]
     duplicate_classes: int
+    dex_files: int
+    overflow_splits: int
+    split_blocks: list[str]
     total_bytes: int
+    sets: list[SetResult]
 
 
 def split(options: Options) -> Result:
@@ -106,10 +119,10 @@ def split(options: Options) -> Result:
 
     The output directory receives:
 
-    - `<k>.dex`: the grouped DEX files, `0.dex`, `1.dex`, ..., business files first. Each one is
-      a valid, standalone DEX file.
+    - `<k>.dex`: the grouped DEX files, `0.dex`, `1.dex`, ..., set by set. Each one is a valid,
+      standalone DEX file.
     - `index.csv` (`class,file`): every class descriptor and the DEX file it is in.
-    - `tiers.csv` (`file,tier`): whether each DEX file is `business` or `framework`.
+    - `sets.csv` (`file,set`): the set of each DEX file.
 
     These files replace those of an earlier run. `<k>.dex` files left by an earlier, bigger run
     are removed, so every DEX file in the directory is listed in `index.csv`. Other files in the
@@ -122,31 +135,30 @@ def split(options: Options) -> Result:
         The counts of what was read and written.
 
     Raises:
-        SplitError: If a cap is below 1, the APK cannot be read, or a file cannot be written.
+        SplitError: If the APK cannot be read or a file cannot be written.
+        split_dex.class_sets.AssignmentError: If the classes cannot be sorted into the sets.
+        split_dex.strategy.StrategyError: If a strategy returns groups that break the rules.
     """
-    _check_caps(options)
     apk = _open_apk(options.apk_path)
     classes = _read_classes(apk, options.apk_path)
-    plan = _plan_groups(apk, classes, options)
+    members = class_sets.assign(classes.descriptors, options.sets, options.assignments)
+    app = _App(apk, options.apk_path, classes)
+    plans = [_plan(class_set, members[class_set.name], app) for class_set in options.sets]
     _create_directory(options.out_dir)
-    writer = _write_groups(options.out_dir, classes, plan)
+    writer = _write_plans(options.out_dir, classes, options.sets, plans)
     _remove_stale_dex_files(options.out_dir, writer.file_count)
     return Result(
         total_classes=len(classes.descriptors),
-        business_classes=plan.business_classes,
-        framework_classes=len(classes.descriptors) - plan.business_classes,
-        business_dex=writer.tier_file_count(_Tier.BUSINESS),
-        framework_dex=writer.tier_file_count(_Tier.FRAMEWORK),
-        overflow_splits=writer.overflow_splits,
-        split_packages=writer.split_packages,
         duplicate_classes=classes.duplicates,
+        dex_files=writer.file_count,
+        overflow_splits=writer.overflow_splits,
+        split_blocks=writer.split_blocks,
         total_bytes=writer.total_bytes,
+        sets=[
+            SetResult(class_set.name, len(members[class_set.name]), writer.files_of(class_set.name))
+            for class_set in options.sets
+        ],
     )
-
-
-class _Tier(enum.StrEnum):
-    BUSINESS = "business"
-    FRAMEWORK = "framework"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -168,28 +180,6 @@ class _ApkClasses:
     index_of: dict[str, int]
     duplicates: int
     version: int
-
-
-@dataclasses.dataclass(frozen=True)
-class _Plan:
-    """The groups to write, each a list of class ids, in the order they are written.
-
-    Attributes:
-        business_groups: The business groups, from the package-safe partition.
-        framework_groups: The framework groups, one per source DEX file unless merged.
-        business_classes: The number of business classes.
-    """
-
-    business_groups: list[list[int]]
-    framework_groups: list[list[int]]
-    business_classes: int
-
-
-def _check_caps(options: Options) -> None:
-    if options.business_cap < 1:
-        raise SplitError("business-cap must be >= 1")
-    if options.framework_cap < 1:
-        raise SplitError("framework-cap must be >= 1")
 
 
 def _open_apk(apk_path: pathlib.Path) -> dexpp.Apk:
@@ -267,132 +257,152 @@ def _read_model(apk: dexpp.Apk, entry: str) -> dexpp.Model:
         raise SplitError(f"{entry}: {error}") from error
 
 
-def _plan_groups(apk: dexpp.Apk, classes: _ApkClasses, options: Options) -> _Plan:
-    """Sort the classes into the two tiers and group each tier."""
-    is_business = _business_flags(classes, options)
-    graph = _affinity_graph(apk, options.apk_path, classes, is_business)
-    business = [class_id for class_id, flag in enumerate(is_business) if flag is True]
-    return _Plan(
-        business_groups=partition.partition_by_package_affinity(
-            business, graph, classes.descriptors, options.business_cap
-        ),
-        framework_groups=_framework_groups(classes.sources, is_business, options.framework_cap),
-        business_classes=len(business),
-    )
+class _App:
+    """What the splitter knows about the APK, shared by every set (see `strategy.App`).
 
-
-def _business_flags(classes: _ApkClasses, options: Options) -> list[bool]:
-    """Whether each class is business: under the app's package and not in a hot package."""
-    prefix = "L" + options.package.replace(".", "/")
-    hot_packages = _hot_packages(options.hotlist, classes.index_of, prefix)
-    return [
-        descriptor.startswith(prefix) and partition.package_of(descriptor) not in hot_packages
-        for descriptor in classes.descriptors
-    ]
-
-
-def _hot_packages(
-    hotlist: collections.abc.Iterable[str],
-    index_of: collections.abc.Mapping[str, int],
-    prefix: str,
-) -> set[str]:
-    """The packages that the hotlist moves to the framework tier.
-
-    That is the package of every listed class that is itself business. The whole package moves,
-    not just the listed class, so no package is split across the two tiers.
+    The analysis of the APK's code is made on first use, by the first set that needs it.
     """
-    packages: set[str] = set()
-    for binary_name in hotlist:
-        descriptor = "L" + binary_name.replace(".", "/") + ";"
-        if descriptor in index_of and descriptor.startswith(prefix):
-            packages.add(partition.package_of(descriptor))
-    return packages
+
+    def __init__(self, apk: dexpp.Apk, apk_path: pathlib.Path, classes: _ApkClasses) -> None:
+        self._apk = apk
+        self._apk_path = apk_path
+        self._classes = classes
+        self._context: dexpp.AnalysisContext | None = None
+
+    @property
+    def descriptors(self) -> collections.abc.Sequence[str]:
+        """The descriptor of every class of the APK, by class id."""
+        return self._classes.descriptors
+
+    def source_dex(self, class_id: int) -> int:
+        """The input DEX file a class comes from: 0 for `classes.dex`, 1 for `classes2.dex`, ..."""
+        return self._classes.sources[class_id]
+
+    def links(
+        self,
+        class_ids: collections.abc.Sequence[int],
+        weights: collections.abc.Mapping[strategy.LinkKind, int],
+    ) -> partition.AffinityGraph:
+        """The links among the given classes, each link counted with the weight of its kind.
+
+        Only the code of the given classes is read, so the cost follows the size of the set.
+        """
+        members = set(class_ids)
+        index_of = self._classes.index_of
+        graph = partition.AffinityGraph(len(self._classes.descriptors))
+        for cls in self.analysis.classes:
+            class_id = index_of.get(cls.name)
+            if class_id is None or class_id not in members:
+                continue
+            for descriptor, weight in _weighted_links(cls, weights):
+                other = index_of.get(descriptor)
+                if other is not None and other in members:
+                    graph.add_edge(class_id, other, weight)
+        return graph
+
+    @property
+    def apk(self) -> dexpp.Apk:
+        """The APK."""
+        return self._apk
+
+    @property
+    def analysis(self) -> dexpp.AnalysisContext:
+        """The analysis of the APK's code."""
+        if self._context is None:
+            try:
+                self._context = self._apk.analysis()
+            except ValueError as error:
+                raise SplitError(f"analysis failed on apk: {self._apk_path}") from error
+        return self._context
 
 
-def _affinity_graph(
-    apk: dexpp.Apk,
-    apk_path: pathlib.Path,
-    classes: _ApkClasses,
-    is_business: collections.abc.Sequence[bool],
-) -> partition.AffinityGraph:
-    """The links between business classes, counted per pair of classes.
-
-    Links never cross the tier boundary, so framework classes do not pull business classes
-    together. The analysis reuses the archive that `apk` has already loaded.
-    """
-    try:
-        context = apk.analysis()
-    except ValueError as error:
-        raise SplitError(f"analysis failed on apk: {apk_path}") from error
-    graph = partition.AffinityGraph(len(classes.descriptors))
-    for cls in context.classes:
-        class_id = classes.index_of.get(cls.name)
-        if class_id is None or is_business[class_id] is False:
-            continue
-        for descriptor in _linked_descriptors(cls):
-            other = classes.index_of.get(descriptor)
-            if other is not None and is_business[other] is True:
-                graph.add_edge(class_id, other)
-    return graph
-
-
-def _linked_descriptors(cls: dexpp.Class) -> collections.abc.Iterator[str]:
-    """The class descriptors a class is linked to, once per link.
+def _weighted_links(
+    cls: dexpp.Class, weights: collections.abc.Mapping[strategy.LinkKind, int]
+) -> collections.abc.Iterator[tuple[str, int]]:
+    """The class descriptors a class is linked to, once per link, with the weight of the link.
 
     Those are its superclass, the interfaces it implements, the top-level class it is nested in
     (`LFoo$Bar;` is linked to `LFoo;`), and every class that one of its methods refers to: a
-    called method, an accessed field, or a used type (`new`, a cast, `instanceof`, ...).
+    called method, an accessed field, or a used type (`new`, a cast, `instanceof`, ...). Links of
+    a kind that weighs 0 are skipped without reading them.
     """
     superclass = cls.superclass
-    if superclass is not None:
-        yield superclass.descriptor
-    for interface in cls.interfaces:
-        yield interface.descriptor
+    if superclass is not None and weights[strategy.LinkKind.SUPERCLASS] != 0:
+        yield superclass.descriptor, weights[strategy.LinkKind.SUPERCLASS]
+    if weights[strategy.LinkKind.INTERFACE] != 0:
+        for interface in cls.interfaces:
+            yield interface.descriptor, weights[strategy.LinkKind.INTERFACE]
     name = cls.name
     dollar = name.find("$")
-    if dollar != -1:
-        yield name[:dollar] + ";"
+    if dollar != -1 and weights[strategy.LinkKind.NESTING] != 0:
+        yield name[:dollar] + ";", weights[strategy.LinkKind.NESTING]
+    yield from _code_links(cls, weights)
+
+
+def _code_links(
+    cls: dexpp.Class, weights: collections.abc.Mapping[strategy.LinkKind, int]
+) -> collections.abc.Iterator[tuple[str, int]]:
+    """The classes the methods of a class refer to, with the weight of each reference's kind."""
+    call_weight = weights[strategy.LinkKind.CALL]
+    field_weight = weights[strategy.LinkKind.FIELD]
+    type_weight = weights[strategy.LinkKind.TYPE]
+    if call_weight == 0 and field_weight == 0 and type_weight == 0:
+        return
     for method in cls.methods:
-        for call in method.calls:
-            yield call.target.class_descriptor
-        for access in method.field_accesses:
-            yield access.field.class_descriptor
-        for use in method.type_uses:
-            yield use.descriptor
+        if call_weight != 0:
+            for call in method.calls:
+                yield call.target.class_descriptor, call_weight
+        if field_weight != 0:
+            for access in method.field_accesses:
+                yield access.field.class_descriptor, field_weight
+        if type_weight != 0:
+            for use in method.type_uses:
+                yield use.descriptor, type_weight
 
 
-def _framework_groups(
-    sources: collections.abc.Sequence[int], is_business: collections.abc.Sequence[bool], cap: int
-) -> list[list[int]]:
-    """The framework classes: one group per source DEX file, merged down to at most `cap` groups.
-
-    Framework classes keep the app's layout, so the Android class loader loads them as before.
-    Only an APK with more DEX files than `cap` has groups merged (rare: most apps have a handful
-    of DEX files).
-    """
-    by_source: dict[int, list[int]] = {}
-    for class_id, source in enumerate(sources):
-        if is_business[class_id] is False:
-            by_source.setdefault(source, []).append(class_id)
-    groups = [by_source[source] for source in sorted(by_source)]
-    if len(groups) <= cap:
-        return groups
-    return _merge_groups(groups, cap)
+def _plan(
+    class_set: class_sets.ClassSet, class_ids: collections.abc.Sequence[int], app: _App
+) -> list[strategy.Group]:
+    """Ask the set's strategy for its groups, and check them."""
+    groups = list(class_set.strategy.plan(strategy.Classes(class_ids, app)))
+    _check_groups(class_set.name, groups, class_ids, app.descriptors)
+    return groups
 
 
-def _merge_groups(groups: collections.abc.Sequence[list[int]], cap: int) -> list[list[int]]:
-    """Merge groups into `cap` bins: the biggest group first, each into the smallest bin.
-
-    Ties keep the original order of the groups and take the lowest bin.
-    """
-    bins: list[list[int]] = [[] for _ in range(cap)]
-    # A heap of (class count, bin index). In ascending order, the list is already a heap.
-    sizes = [(0, index) for index in range(cap)]
-    for group in sorted(groups, key=len, reverse=True):
-        size, index = heapq.heappop(sizes)
-        bins[index].extend(group)
-        heapq.heappush(sizes, (size + len(group), index))
-    return bins
+def _check_groups(
+    set_name: str,
+    groups: collections.abc.Sequence[strategy.Group],
+    class_ids: collections.abc.Sequence[int],
+    descriptors: collections.abc.Sequence[str],
+) -> None:
+    """Check that a strategy put every class of its set in exactly one non-empty block."""
+    expected = set(class_ids)
+    seen: set[int] = set()
+    for group in groups:
+        if len(group.blocks) == 0:
+            raise strategy.StrategyError(f"set {set_name}: the strategy returned an empty group")
+        for block in group.blocks:
+            if len(block.class_ids) == 0:
+                raise strategy.StrategyError(
+                    f"set {set_name}: the strategy returned an empty block"
+                )
+            for class_id in block.class_ids:
+                if class_id not in expected:
+                    raise strategy.StrategyError(
+                        f"set {set_name}: the strategy returned class id {class_id}, which is "
+                        "not in the set"
+                    )
+                if class_id in seen:
+                    raise strategy.StrategyError(
+                        f"set {set_name}: the strategy returned {descriptors[class_id]} twice"
+                    )
+                seen.add(class_id)
+    if len(seen) < len(expected):
+        missing = [descriptors[class_id] for class_id in class_ids if class_id not in seen]
+        raise strategy.StrategyError(
+            f"set {set_name}: the strategy left out {len(missing)} classes, such as "
+            f"{', '.join(missing[:_EXAMPLES])}"
+        )
 
 
 def _create_directory(out_dir: pathlib.Path) -> None:
@@ -402,12 +412,12 @@ def _create_directory(out_dir: pathlib.Path) -> None:
         raise SplitError(f"cannot create output directory: {out_dir}") from error
 
 
-def _open_map(path: pathlib.Path, header: str) -> TextIO:
+def _open_csv(path: pathlib.Path, header: str) -> TextIO:
     """Open a CSV map for writing, and write its header line."""
     try:
         file = path.open("w", encoding="utf-8", newline="\n")
     except OSError as error:
-        raise SplitError(f"cannot write maps in: {path.parent}") from error
+        raise SplitError(f"cannot write {path}") from error
     file.write(f"{header}\n")
     return file
 
@@ -420,21 +430,21 @@ class _DexWriter:
         out_dir: pathlib.Path,
         classes: _ApkClasses,
         index_file: TextIO,
-        tiers_file: TextIO,
+        sets_file: TextIO,
     ) -> None:
         self._out_dir = out_dir
         self._classes = classes
         self._index_file = index_file
-        self._tiers_file = tiers_file
-        self._tier_file_counts = {_Tier.BUSINESS: 0, _Tier.FRAMEWORK: 0}
+        self._sets_file = sets_file
+        self._set_file_counts: dict[str, int] = {}
         self._total_bytes = 0
         self._overflow_splits = 0
-        self._split_packages: set[str] = set()
+        self._split_blocks: set[str] = set()
 
     @property
     def file_count(self) -> int:
         """The number of DEX files written."""
-        return sum(self._tier_file_counts.values())
+        return sum(self._set_file_counts.values())
 
     @property
     def total_bytes(self) -> int:
@@ -447,74 +457,83 @@ class _DexWriter:
         return self._overflow_splits
 
     @property
-    def split_packages(self) -> list[str]:
-        """The packages that had to be cut across files, sorted."""
-        return sorted(self._split_packages)
+    def split_blocks(self) -> list[str]:
+        """The names of the blocks that had to be cut across files, sorted."""
+        return sorted(self._split_blocks)
 
-    def tier_file_count(self, tier: _Tier) -> int:
-        """The number of DEX files written for one tier."""
-        return self._tier_file_counts[tier]
+    def files_of(self, set_name: str) -> int:
+        """The number of DEX files written for a set."""
+        return self._set_file_counts.get(set_name, 0)
 
-    def write_group(self, members: list[int], tier: _Tier) -> None:
+    def write_group(self, group: strategy.Group, set_name: str) -> None:
         """Write a group as one DEX file, or as several if it goes over a 64K limit.
 
-        A group that goes over a limit is cut in two (see `_cut_point`), and each part is written
+        A group that goes over a limit is cut in two (see `_cut`), and each part is written
         again, the first part first.
         """
-        pending = [members]
+        pending = [list(group.blocks)]
         while len(pending) > 0:
-            group = pending.pop()
-            data = self._encode(group)
+            blocks = pending.pop()
+            class_ids = [class_id for block in blocks for class_id in block.class_ids]
+            data = self._encode(class_ids)
             if data is None:
                 self._overflow_splits += 1
-                cut = self._cut_point(group, tier)
-                pending.append(group[cut:])
-                pending.append(group[:cut])
+                first, second = self._cut(blocks)
+                pending.append(second)
+                pending.append(first)
             else:
-                self._write_file(group, tier, data)
+                self._write_file(class_ids, set_name, data)
 
-    def _encode(self, group: list[int]) -> bytes | None:
-        """The group as DEX bytes, or None if it goes over a 64K limit and can be cut."""
+    def _encode(self, class_ids: list[int]) -> bytes | None:
+        """The classes as DEX bytes, or None if they go over a 64K limit and can be cut."""
         model = dexpp.Model(self._classes.version)
-        for class_id in group:
+        for class_id in class_ids:
             source = self._classes.models[self._classes.sources[class_id]]
             model.copy_class(source, self._classes.descriptors[class_id])
         try:
             return model.write()
         except ValueError as error:
-            if len(group) > 1 and _overflows(model.pool_stats) is True:
+            if len(class_ids) > 1 and _overflows(model.pool_stats) is True:
                 return None
             raise SplitError(f"write failed: {error}") from error
 
-    def _cut_point(self, group: list[int], tier: _Tier) -> int:
-        """Where to cut a group that goes over a 64K limit.
+    def _cut(
+        self, blocks: list[strategy.Block]
+    ) -> tuple[list[strategy.Block], list[strategy.Block]]:
+        """Cut blocks that go over a 64K limit in two.
 
-        A framework group is cut in the middle. A business group holds whole packages one after
-        another, so it is cut at the package boundary nearest its middle and no package is split.
-        Only a group that is a single package is cut inside it, and that package is recorded.
+        The cut falls at the block boundary nearest the middle (the first one on a tie). A
+        single block is cut in its middle, and its name is recorded.
         """
-        half = len(group) // 2
-        if tier is _Tier.FRAMEWORK:
-            return half
-        packages = [partition.package_of(self._classes.descriptors[class_id]) for class_id in group]
-        boundaries = [i for i in range(1, len(group)) if packages[i] != packages[i - 1]]
-        if len(boundaries) == 0:
-            self._split_packages.add(packages[0])
-            return half
-        return min(boundaries, key=lambda boundary: abs(boundary - half))
+        half = sum(len(block.class_ids) for block in blocks) // 2
+        if len(blocks) == 1:
+            block = blocks[0]
+            if block.name is not None:
+                self._split_blocks.add(block.name)
+            return (
+                [strategy.Block(block.class_ids[:half], block.name)],
+                [strategy.Block(block.class_ids[half:], block.name)],
+            )
+        boundaries: list[int] = []
+        position = 0
+        for block in blocks[:-1]:
+            position += len(block.class_ids)
+            boundaries.append(position)
+        cut = min(range(len(boundaries)), key=lambda index: abs(boundaries[index] - half))
+        return blocks[: cut + 1], blocks[cut + 1 :]
 
-    def _write_file(self, group: list[int], tier: _Tier, data: bytes) -> None:
+    def _write_file(self, class_ids: list[int], set_name: str, data: bytes) -> None:
         name = f"{self.file_count}.dex"
         path = self._out_dir / name
         try:
             path.write_bytes(data)
         except OSError as error:
             raise SplitError(f"cannot write DEX: {path}") from error
-        for class_id in group:
+        for class_id in class_ids:
             self._index_file.write(f"{self._classes.descriptors[class_id]},{name}\n")
-        self._tiers_file.write(f"{name},{tier}\n")
+        self._sets_file.write(f"{name},{set_name}\n")
         self._total_bytes += len(data)
-        self._tier_file_counts[tier] += 1
+        self._set_file_counts[set_name] = self.files_of(set_name) + 1
 
 
 def _overflows(stats: dexpp.PoolStats) -> bool:
@@ -526,17 +545,21 @@ def _overflows(stats: dexpp.PoolStats) -> bool:
     )
 
 
-def _write_groups(out_dir: pathlib.Path, classes: _ApkClasses, plan: _Plan) -> _DexWriter:
-    """Write every group as DEX files, business groups first, and list them in the maps."""
+def _write_plans(
+    out_dir: pathlib.Path,
+    classes: _ApkClasses,
+    sets: collections.abc.Sequence[class_sets.ClassSet],
+    plans: collections.abc.Sequence[collections.abc.Sequence[strategy.Group]],
+) -> _DexWriter:
+    """Write the groups of every set as DEX files, set by set, and list them in the maps."""
     with (
-        _open_map(out_dir / "index.csv", "class,file") as index_file,
-        _open_map(out_dir / "tiers.csv", "file,tier") as tiers_file,
+        _open_csv(out_dir / "index.csv", "class,file") as index_file,
+        _open_csv(out_dir / "sets.csv", "file,set") as sets_file,
     ):
-        writer = _DexWriter(out_dir, classes, index_file, tiers_file)
-        for group in plan.business_groups:
-            writer.write_group(group, _Tier.BUSINESS)
-        for group in plan.framework_groups:
-            writer.write_group(group, _Tier.FRAMEWORK)
+        writer = _DexWriter(out_dir, classes, index_file, sets_file)
+        for class_set, groups in zip(sets, plans, strict=True):
+            for group in groups:
+                writer.write_group(group, class_set.name)
     return writer
 
 

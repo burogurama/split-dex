@@ -169,3 +169,25 @@ def testPartition_whenEqualEdgesCompete_takesTheHigherPackageFirst() -> None:
     groups = partition.partition_by_package_affinity(_all_ids(3), graph, descriptors, 10)
 
     assert groups == [[0, 2, 1]]
+
+
+def testFillGroups_whenAUnitWouldOverflowTheGroup_startsANewGroup() -> None:
+    groups = partition.fill_groups([[0, 1], [2, 3], [4]], 3)
+
+    assert groups == [[0, 1], [2, 3, 4]]
+
+
+def testFillGroups_whenAUnitIsBiggerThanCap_givesItAGroupOfItsOwn() -> None:
+    groups = partition.fill_groups([[0], [1, 2, 3], [4]], 2)
+
+    assert groups == [[0], [1, 2, 3], [4]]
+
+
+def testFillGroups_whenCapIsBelowOne_countsItAsOne() -> None:
+    groups = partition.fill_groups([[0], [1]], 0)
+
+    assert groups == [[0], [1]]
+
+
+def testFillGroups_whenThereAreNoUnits_returnsNoGroups() -> None:
+    assert partition.fill_groups([], 10) == []

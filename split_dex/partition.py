@@ -112,7 +112,38 @@ def partition_by_package_affinity(
     packages = _group_by_package(members, descriptors)
     edges = _package_edges(members, graph, packages)
     order = _order_packages(edges)
-    return _fill_groups(order, packages.classes, max(cap, 1))
+    return fill_groups((packages.classes[package] for package in order), cap)
+
+
+def fill_groups(
+    units: collections.abc.Iterable[collections.abc.Sequence[int]], cap: int
+) -> list[list[int]]:
+    """Fill groups of about `cap` classes with whole units, such as packages, in order.
+
+    A unit that would push the current group over `cap` starts a new group, and a group that
+    reaches `cap` is closed. So a unit of `cap` classes or more gets a group of its own.
+
+    Args:
+        units: The units, each a sequence of class ids, in the order they are filled in.
+        cap: The target number of classes per group. A value below 1 counts as 1.
+
+    Returns:
+        The groups, each a list of class ids. No group is empty.
+    """
+    cap = max(cap, 1)
+    groups: list[list[int]] = []
+    current: list[int] = []
+    for unit in units:
+        if len(current) > 0 and len(current) + len(unit) > cap:
+            groups.append(current)
+            current = []
+        current.extend(unit)
+        if len(current) >= cap:
+            groups.append(current)
+            current = []
+    if len(current) > 0:
+        groups.append(current)
+    return groups
 
 
 @dataclasses.dataclass(frozen=True)
@@ -196,25 +227,3 @@ def _walk_from(
         for neighbour, weight in edges[package].items():
             if placed[neighbour] is False:
                 heapq.heappush(heap, (-weight, -neighbour))
-
-
-def _fill_groups(
-    order: collections.abc.Sequence[int],
-    package_classes: collections.abc.Sequence[collections.abc.Sequence[int]],
-    cap: int,
-) -> list[list[int]]:
-    """Fill groups of about `cap` classes with whole packages, in the given order."""
-    groups: list[list[int]] = []
-    current: list[int] = []
-    for package in order:
-        classes = package_classes[package]
-        if len(current) > 0 and len(current) + len(classes) > cap:
-            groups.append(current)
-            current = []
-        current.extend(classes)
-        if len(current) >= cap:
-            groups.append(current)
-            current = []
-    if len(current) > 0:
-        groups.append(current)
-    return groups
