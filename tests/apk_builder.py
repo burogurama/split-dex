@@ -88,7 +88,7 @@ def write_dex(classes: collections.abc.Sequence[dexpp.Model]) -> bytes:
     """
     dex = dexpp.Model()
     for cls in classes:
-        dex.copy_class(cls, cls.class_descriptors[0])
+        dex.copy_class(cls, cls.class_descriptors()[0])
     return dex.write()
 
 

@@ -81,12 +81,15 @@ wheels = [
 
 [[package]]
 name = "dexpp"
-version = "0.2.0"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d2/25/f3cdaf0cc1515ffa239f39442c7a74b34ca35aa77cfd431dc446d5668652/dexpp-0.2.0.tar.gz", hash = "sha256:5fb860e60aeb3149238fb1f36406c436e601ac0a16ab9496e8ebfd0e30b00081", size = 211113, upload-time = "2026-10-23T05:35:39.882Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/55/696a70fd4d28a8fb4c32d02405653058a1a6a9e7f3e2e0fb5fce4bb4aab7/dexpp-0.3.0.tar.gz", hash = "sha256:a80abfe60e79c0277097d17487d81b815d0c40345283f5d303f69ab7c2fab644", size = 458038, upload-time = "2026-11-16T12:29:14.838Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/9f/b938bc243942030235c7b148a0386ba0f0a512eca9b1ceea647fba4ef26e/dexpp-0.2.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9c56fc2275af004df6c50cb28f693147c98dd8d15bbb9b8c3126f750c51d4387", size = 1067967, upload-time = "2026-10-23T05:35:35.994Z" },
-    { url = "https://files.pythonhosted.org/packages/d6/5e/91a2a66698d04162ae1a1e61a468af3c7da72d0ff60b34b34d44127e0e65/dexpp-0.2.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:48f68c3234edf1fc85dc952857eea3a08ade2688ac22fe597a9cb16ff4e5987a", size = 2036410, upload-time = "2026-10-23T05:35:37.757Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/9b/9566c4ae75c05d58ce5c0dd2bd9d8da46c8e6a4f805494440e7bf1b04f42/dexpp-0.3.0-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:6f379c481452a8fbbbcda27523bbc46140c8a9aa4aa7faa8b084a8c3c9e709a5", size = 757566, upload-time = "2026-11-16T12:29:06.571Z" },
+    { url = "https://files.pythonhosted.org/packages/49/3c/3bd5cf9aa981f27254e1067a7efe428072c3993c2ac62c3459b2b7589395/dexpp-0.3.0-cp314-cp314-macosx_14_0_x86_64.whl", hash = "sha256:41743de69c04f265a3709f4d65d0da92979dc5c416780eb5e8edf73867383c2b", size = 837053, upload-time = "2026-11-16T12:29:08.361Z" },
+    { url = "https://files.pythonhosted.org/packages/df/47/a64d4d8f391f1a7041d9e5d815ce68261dbc0810c34984372829da0c1cfa/dexpp-0.3.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:dfb402a6662265385737a5c0a7ed19da4f31ecb3df6457372f14036c48672e2f", size = 1201896, upload-time = "2026-11-16T12:29:09.969Z" },
+    { url = "https://files.pythonhosted.org/packages/75/30/2f5e566e9731a2179fe05c64d3168f1e5b3101382bdc04e50a3b56d2519c/dexpp-0.3.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:b6d46ed7acf1e8c53943e0864d0017aa390630cda12c7bf20599bd1651aae8ef", size = 2099693, upload-time = "2026-11-16T12:29:11.591Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/2e/3feb4ed9162a093bcac8e3c09c210173606f2be6eb9a1e6019e959612318/dexpp-0.3.0-cp314-cp314-win_amd64.whl", hash = "sha256:71214a19c1ca2bd68f8a9c9cdd01525428025bb7cc481defe1e6669b0d21fa35", size = 1006416, upload-time = "2026-11-16T12:29:13.258Z" },
 ]
 
 [[package]]
@@ -312,7 +315,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "dexpp", specifier = ">=0.2.0,<0.3" }]
+requires-dist = [{ name = "dexpp", specifier = ">=0.3.0,<0.4" }]
 
 [package.metadata.requires-dev]
 dev = [

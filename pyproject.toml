@@ -24,7 +24,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 # dexpp reads, analyses and writes the DEX files.
-dependencies = ["dexpp>=0.2.0,<0.3"]
+dependencies = ["dexpp>=0.3.0,<0.4"]
 
 [project.urls]
 Homepage = "https://github.com/burogurama/split-dex"

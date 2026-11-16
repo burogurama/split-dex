@@ -31,11 +31,6 @@ _MAX_DEX_ENTRY_NUMBER = 0xFFFFFFFF
 # A DEX file name that this tool writes: 0.dex, 1.dex, ... but never 07.dex.
 _WRITTEN_DEX_FILE = re.compile(r"(0|[1-9][0-9]*)\.dex")
 
-# The most entries a DEX file can index in each pool (see dexpp.PoolStats).
-_MAX_TYPES = 65535
-_MAX_PROTOS = 65535
-_MAX_MEMBERS = 65536  # fields, methods, method handles and call sites
-
 # How many classes an error message about a strategy's groups names.
 _EXAMPLES = 3
 
@@ -187,7 +182,7 @@ def _open_apk(apk_path: pathlib.Path) -> dexpp.Apk:
         raise SplitError(f"apk not found: {apk_path}")
     try:
         return dexpp.Apk.open(str(apk_path))
-    except (FileNotFoundError, ValueError) as error:
+    except (OSError, dexpp.InvalidApkError) as error:
         raise SplitError(f"cannot open apk: {apk_path}") from error
 
 
@@ -197,7 +192,7 @@ def _read_classes(apk: dexpp.Apk, apk_path: pathlib.Path) -> _ApkClasses:
     A class defined in more than one DEX file is kept once: the first copy in multidex order,
     which is the one Android loads. Keeping both would put one class in two output files.
     """
-    entries = _dex_entries(apk.entries)
+    entries = _dex_entries(apk.entries())
     if len(entries) == 0:
         raise SplitError(f"apk has no classes*.dex: {apk_path}")
     models: list[dexpp.Model] = []
@@ -208,7 +203,7 @@ def _read_classes(apk: dexpp.Apk, apk_path: pathlib.Path) -> _ApkClasses:
     for source, entry in enumerate(entries):
         model = _read_model(apk, entry)
         models.append(model)
-        for descriptor in model.class_descriptors:
+        for descriptor in model.class_descriptors():
             if descriptor in index_of:
                 duplicates += 1
                 continue
@@ -253,7 +248,7 @@ def _read_model(apk: dexpp.Apk, entry: str) -> dexpp.Model:
         raise SplitError(f"cannot read apk entry: {entry}")
     try:
         return dexpp.Model.read(data)
-    except ValueError as error:
+    except (dexpp.InvalidDexError, dexpp.UnsupportedDexError) as error:
         raise SplitError(f"{entry}: {error}") from error
 
 
@@ -290,8 +285,8 @@ class _App:
         members = set(class_ids)
         index_of = self._classes.index_of
         graph = partition.AffinityGraph(len(self._classes.descriptors))
-        for cls in self.analysis.classes:
-            class_id = index_of.get(cls.name)
+        for cls in self.analysis.classes():
+            class_id = index_of.get(cls.descriptor)
             if class_id is None or class_id not in members:
                 continue
             for descriptor, weight in _weighted_links(cls, weights):
@@ -311,7 +306,7 @@ class _App:
         if self._context is None:
             try:
                 self._context = self._apk.analysis()
-            except ValueError as error:
+            except (dexpp.InvalidApkError, dexpp.InvalidDexError) as error:
                 raise SplitError(f"analysis failed on apk: {self._apk_path}") from error
         return self._context
 
@@ -332,10 +327,10 @@ def _weighted_links(
     if weights[strategy.LinkKind.INTERFACE] != 0:
         for interface in cls.interfaces:
             yield interface.descriptor, weights[strategy.LinkKind.INTERFACE]
-    name = cls.name
-    dollar = name.find("$")
+    descriptor = cls.descriptor
+    dollar = descriptor.find("$")
     if dollar != -1 and weights[strategy.LinkKind.NESTING] != 0:
-        yield name[:dollar] + ";", weights[strategy.LinkKind.NESTING]
+        yield descriptor[:dollar] + ";", weights[strategy.LinkKind.NESTING]
     yield from _code_links(cls, weights)
 
 
@@ -350,13 +345,13 @@ def _code_links(
         return
     for method in cls.methods:
         if call_weight != 0:
-            for call in method.calls:
+            for call in method.calls():
                 yield call.target.class_descriptor, call_weight
         if field_weight != 0:
-            for access in method.field_accesses:
+            for access in method.field_accesses():
                 yield access.field.class_descriptor, field_weight
         if type_weight != 0:
-            for use in method.type_uses:
+            for use in method.type_uses():
                 yield use.descriptor, type_weight
 
 
@@ -492,8 +487,8 @@ class _DexWriter:
             model.copy_class(source, self._classes.descriptors[class_id])
         try:
             return model.write()
-        except ValueError as error:
-            if len(class_ids) > 1 and _overflows(model.pool_stats) is True:
+        except dexpp.ModelError as error:
+            if isinstance(error, dexpp.PoolOverflowError) and len(class_ids) > 1:
                 return None
             raise SplitError(f"write failed: {error}") from error
 
@@ -534,15 +529,6 @@ class _DexWriter:
         self._sets_file.write(f"{name},{set_name}\n")
         self._total_bytes += len(data)
         self._set_file_counts[set_name] = self.files_of(set_name) + 1
-
-
-def _overflows(stats: dexpp.PoolStats) -> bool:
-    """Whether a pool has more entries than a DEX file can index."""
-    return (
-        stats.types > _MAX_TYPES
-        or stats.protos > _MAX_PROTOS
-        or max(stats.fields, stats.methods, stats.method_handles, stats.call_sites) > _MAX_MEMBERS
-    )
 
 
 def _write_plans(

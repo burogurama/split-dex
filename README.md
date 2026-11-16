@@ -119,7 +119,8 @@ pip install split-dex
 ```
 
 Its dependency dexpp has prebuilt wheels for Linux x86_64 (glibc 2.28+ and
-musl). On other platforms, the installer builds dexpp from source, which needs
+musl), macOS 14 or newer (Apple Silicon and Intel) and Windows x64. On other
+platforms, the installer builds dexpp from source, which needs
 a C++23 compiler (GCC 13 or newer, or Clang 19 or newer) and CMake 3.18 or
 newer.
 

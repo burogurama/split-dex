@@ -50,7 +50,7 @@ class _RecordAnalysis:
         for class_id in classes.ids:
             found = classes.analysis.find_class(classes.descriptors[class_id])
             self.found.append(found is not None)
-        self.entries = classes.apk.entries
+        self.entries = classes.apk.entries()
         return [strategy.Group.of_classes(classes.ids)]
 
 
@@ -127,7 +127,7 @@ def _wide_classes(package: str, count: int) -> list[dexpp.Model]:
 def _descriptors(
     dex_files: collections.abc.Sequence[collections.abc.Sequence[dexpp.Model]],
 ) -> set[str]:
-    return {cls.class_descriptors[0] for classes in dex_files for cls in classes}
+    return {cls.class_descriptors()[0] for classes in dex_files for cls in classes}
 
 
 def testSplit_whenAppHasSeveralDexFiles_listsEveryClassExactlyOnce(tmp_path: pathlib.Path) -> None:
@@ -156,7 +156,7 @@ def testSplit_whenFilesAreWritten_eachFileHoldsExactlyTheClassesTheIndexLists(
     assert set(listed) == set(_read_csv(out_dir / "sets.csv"))
     for file, descriptors in listed.items():
         model = dexpp.Model.read_file(str(out_dir / file))
-        assert set(model.class_descriptors) == descriptors
+        assert set(model.class_descriptors()) == descriptors
 
 
 def testSplit_whenCapIsSmall_keepsEachPackageInOneFile(tmp_path: pathlib.Path) -> None:
@@ -404,6 +404,27 @@ def testSplit_whenRunAgainWithFewerFiles_removesOnlyTheStaleDexFiles(
 
 def testSplit_whenApkIsMissing_raisesSplitError(tmp_path: pathlib.Path) -> None:
     with pytest.raises(splitter.SplitError, match="apk not found"):
+        splitter.split(_options(tmp_path))
+
+
+def testSplit_whenApkIsADirectory_raisesSplitError(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "app.apk").mkdir()
+
+    with pytest.raises(splitter.SplitError, match="cannot open apk"):
+        splitter.split(_options(tmp_path))
+
+
+def testSplit_whenApkIsNotAZipArchive_raisesSplitError(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "app.apk").write_bytes(b"not a zip archive")
+
+    with pytest.raises(splitter.SplitError, match="cannot open apk"):
+        splitter.split(_options(tmp_path))
+
+
+def testSplit_whenADexEntryIsNotADexFile_raisesSplitError(tmp_path: pathlib.Path) -> None:
+    apk_builder.write_zip(tmp_path / "app.apk", [("classes.dex", b"not a dex file")])
+
+    with pytest.raises(splitter.SplitError, match=r"^classes\.dex: "):
         splitter.split(_options(tmp_path))
 
 
