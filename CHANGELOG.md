@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0
+
+split-dex now needs dexpp 0.3 (`dexpp>=0.3.0,<0.4`). dexpp 0.3 changed its
+Python API, so this version does not work with dexpp 0.2, and split-dex 0.1.0
+does not work with dexpp 0.3.
+
+- Breaking for strategies of your own: `classes.analysis` and `classes.apk`
+  are dexpp 0.3 objects. For example, `Class.name` is now `Class.descriptor`,
+  and `AnalysisContext.classes`, `Apk.entries` and `Method.calls` are now
+  methods: `classes()`, `entries()` and `calls()`. dexpp's changelog lists
+  every change.
+- An `--apk` path that is a directory now fails with the error
+  `cannot open apk`, instead of a `MemoryError` traceback.
+- dexpp 0.3 has prebuilt wheels for macOS 14 or newer and for Windows x64, so
+  installing there no longer builds dexpp from source.
+
 ## 0.1.0
 
 First release of `split-dex`: a Python package with a `split-dex` command,
